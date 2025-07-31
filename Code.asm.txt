@@ -1,0 +1,404 @@
+
+SPEED0 			EQU 60 		; set loop count for servo motor to wait 
+SPEED1 			EQU 50 		; 50 x 0.05s = 2.5s
+SPEED2 			EQU 40
+SPEED3 			EQU 20
+
+STOP_FLAG		EQU 23H.0
+RESET_FLAG		EQU 23H.1
+MOTOR_RUNNING 	EQU 23H.2 
+CHOOSE_MSG  	EQU 21H
+DEBOUNCE 		EQU 22H
+SPEED_MODE 		EQU 30H
+CYCLE_COUNT 	EQU 31H
+
+PWM_FLAG 		EQU 32.1
+PWM_PIN 		EQU P3.5	; Set P1.5 for pwm output
+
+SEG_PORT 		EQU P2 		; Set P2 for 7 segment display code
+DIS0 			EQU P3.6 	; Set P1.6 to select Display 0
+DIS1 			EQU P3.7 	; Set P1.7 to select Display 1
+
+RS 				EQU P3.4
+RW 				EQU P3.1
+EN 				EQU P3.0
+
+;------------------------------ MAIN MODULE ------------------------------
+					ORG 0000H
+					LJMP MAIN
+	
+					ORG 0003H
+					LJMP ISR_INT0  			; ISR External interrupt 0
+
+					ORG 000BH
+					LJMP TIMER0_INT_PWM	 	; Timer 0 PWM interrupt
+	
+					ORG 0013H
+					LJMP ISR_INT1  			; ISR External interrupt 1
+
+					ORG 0050H
+MAIN:				MOV IE, #10000111B ; enable external interrupt 0,1 and timer 0 overflow interrupt
+					MOV TMOD,#11H  			; use timer 0, mode 1 for servo motor PWM signal; timer 1, mode 1 for LCD_delay
+					CLR RW 					; only write no read
+					LCALL INITIALIZE_LCD
+					
+					LCALL CLEAR_LCD
+					MOV DPTR, #MSG15
+					LCALL WRITE_STRING		; display group
+					LCALL GO_ADDRESS
+					MOV DPTR, #MSG16
+					LCALL WRITE_STRING		; display name
+					LCALL DELAY_1s			; delay 1 second for display
+					
+					LCALL CLEAR_LCD			
+					MOV DPTR, #MSG17
+					LCALL WRITE_STRING		; display name
+					LCALL GO_ADDRESS
+					MOV DPTR, #MSG18
+					LCALL WRITE_STRING		; display name
+					LCALL DELAY_1s			; delay 1 second for display
+
+START_AGAIN: 		CLR PWM_FLAG
+					;initialize the motor with 0 degree
+					MOV R5, #0FEH 			; Set pulse width control (0.5ms)   
+					MOV R6, #33H    
+					MOV R3, #0B9H 			; Set pulse width control (19.5ms)   
+					MOV R4, #0CCH 
+					MOV CYCLE_COUNT, #0H
+					CLR STOP_FLAG
+					CLR RESET_FLAG
+					CLR MOTOR_RUNNING
+					
+LCD_RESET:			LCALL CLEAR_LCD			; display menu
+					MOV DPTR, #MSG1
+					LCALL WRITE_STRING
+					LCALL GO_ADDRESS
+					MOV DPTR, #MSG2
+					LCALL WRITE_STRING
+	
+WAIT_MOTOR:			JB MOTOR_RUNNING, CALL_MOTOR
+					LCALL KSCAN1  			; choose mode
+					LCALL CLEAR_LCD
+					LCALL WRITE_STRING  	; display which mode is selected
+					LCALL GO_ADDRESS
+					MOV DPTR, #MSG3  		; display confirm or reset on line 2
+					LCALL WRITE_STRING
+					LCALL KSCAN2  			; select confirm or not ( if C = 1 -> confirm, C = 0, Reset)
+					JNC START_AGAIN
+	
+SERVO_MOTOR_AGAIN:  MOV CYCLE_COUNT, #0H	; initialize cycle count (do not reset the angle because this case only happend when the servo motor complete all cycle and back to 0 degree)
+					LCALL CLEAR_LCD
+					MOV DPTR, #MSG9
+					LCALL WRITE_STRING
+					MOV A,CHOOSE_MSG 		; to find which message to display
+					CJNE A, #0, NEXT_MSG1
+					MOV DPTR, #MSG10
+					LJMP NEXT
+NEXT_MSG1: 			CJNE A, #1, NEXT_MSG2
+					MOV DPTR, #MSG11
+					LJMP NEXT
+NEXT_MSG2: 			CJNE A, #2, NEXT_MSG3
+					MOV DPTR, #MSG12
+					LJMP NEXT
+NEXT_MSG3: 			CJNE A, #3, NEXT
+					MOV DPTR, #MSG13
+
+NEXT:				LCALL GO_ADDRESS
+					LCALL WRITE_STRING
+					LCALL SERVO
+					LCALL CLEAR_LCD
+					MOV DPTR, #MSG14  		; display "Running Complete"
+					LCALL WRITE_STRING
+					LCALL GO_ADDRESS
+					MOV DPTR, #MSG4  		; display "Start or Reset?" after finish
+					LCALL WRITE_STRING
+					LCALL KSCAN2  			; select start again or reset ( if C = 1 -> confirm, C = 0, Reset)
+					JNC BACK
+					LJMP SERVO_MOTOR_AGAIN
+BACK:				LJMP START_AGAIN
+
+CALL_MOTOR:			LCALL SERVO
+					JB MOTOR_RUNNING, WAIT_MOTOR
+
+
+;------------------ LCD Display Module ------------------
+INITIALIZE_LCD:		MOV A,#38H				; set LCD 2 lines and 5x7 matrix
+					LCALL WRITE_CMD
+					MOV A, #0FH				; set display ON, cursor blinking
+					LCALL WRITE_CMD
+					MOV A,#06H				; increment cursor
+					LCALL WRITE_CMD
+					RET
+
+CLEAR_LCD:			MOV A,#01H				; clear display screen
+					LCALL WRITE_CMD
+					RET
+
+WRITE_STRING:		MOV R0,#0
+WRITE_AGAIN:		MOV A,R0
+					MOVC A,@A+DPTR
+					JZ EXIT
+					LCALL WRITE_CHAR
+					INC R0
+					LJMP WRITE_AGAIN
+EXIT:				RET
+
+GO_ADDRESS:			MOV A,#0C0H
+					LCALL WRITE_CMD
+					RET
+
+WRITE_CMD:			MOV P0,A
+					CLR RS
+					SETB EN
+					CLR EN
+					LCALL LCD_DELAY
+					RET
+
+WRITE_CHAR:			MOV P0,A
+					SETB RS
+					SETB EN
+					CLR EN
+					LCALL LCD_DELAY
+					RET
+
+
+;---------------- Keypad Scanning Module ----------------
+KSCAN1: 			; USED TO SCAN WHICH MODE HAS BEEN PRESSED  0 1 2 3 REPRESENT MODE 0, 1, 2, 3
+					MOV DEBOUNCE, #50 ; DEBOUNCE
+DEB1: 				LCALL ROWRD1;
+					JC KSCAN1
+					DJNZ DEBOUNCE, DEB1
+					LCALL COLRD1
+					RET
+
+ROWRD1: 			CLR C
+					MOV P1,#1B 					; focus only on FIRST ROW
+					JNB P1.0, GOBACK_ROW1
+					SETB C
+GOBACK_ROW1:		RET
+
+COLRD1:				MOV P1 , #111100B
+					MOV SPEED_MODE,#SPEED0
+					MOV DPTR, #MSG5
+					MOV CHOOSE_MSG,#0
+
+					JNB P1.2, GOBACK_COL1  		; Mode 0 selected
+					MOV SPEED_MODE,#SPEED1
+					MOV DPTR, #MSG6
+					MOV CHOOSE_MSG,#1
+
+					JNB P1.3, GOBACK_COL1  		; Mode 1 selected
+					MOV SPEED_MODE,#SPEED2
+					MOV DPTR, #MSG7
+					MOV CHOOSE_MSG,#2
+
+					JNB P1.4, GOBACK_COL1  		; Mode 2 selected
+					MOV SPEED_MODE,#SPEED3
+					MOV DPTR, #MSG8
+					MOV CHOOSE_MSG,#3
+
+					JNB P1.5, GOBACK_COL1  		; Mode 3 selected
+					LJMP COLRD1
+GOBACK_COL1:		RET
+	
+KSCAN2: 			; CONFIRM OR RESET 
+					MOV DEBOUNCE, #50 				; DEBOUNCE
+DEB2: 				LCALL ROWRD2
+					JC KSCAN2
+					DJNZ DEBOUNCE, DEB2
+					LCALL COLRD2
+					RET
+
+ROWRD2: 			CLR C
+					MOV P1,#10B 				; FOCUS ON SECOND ROW ONLY 4 IS CONFRIM 5 IS CANCEL
+					JNB P1.1, GOBACK_ROW2
+					SETB C
+GOBACK_ROW2:		RET
+
+COLRD2: 			; USE C TO REPRESENT CONFIRM OR RESET IT IS USEDFULL IN THE 
+					MOV P1 , #1100B
+					SETB C
+					JNB P1.2, GOBACK_COL2;
+					CLR C
+					JNB P1.3, GOBACK_COL2;
+					LJMP COLRD2;
+GOBACK_COL2: 		RET
+
+
+;-------------- Servo Motor Control Module --------------
+SERVO:				SETB TR0
+					SETB MOTOR_RUNNING
+					CLR STOP_FLAG
+					CLR RESET_FLAG
+					
+					MOV A, CYCLE_COUNT
+					CJNE A, #0, NEW_CYCLE  ;prevent delay when reset button is pressed
+					
+					;delay for the first half cycle from 0 degree to 180 degree
+					LCALL SERVO_DELAY 				
+					JB STOP_FLAG, EMERGENCY_STOP	;if stop button pressed
+					JB RESET_FLAG, RESET			;if reset button pressed
+					
+NEW_CYCLE:			LCALL DIS_7SEG
+					;DEGREE180 (backwards)
+					MOV R5, #0F7H 			; Set pulse width control (2.4ms)   
+					MOV R6, #5CH    
+					MOV R3, #0C0H 			; Set pulse width control (17.6ms)   
+					MOV R4, #0A3H   
+					LCALL SERVO_DELAY
+					JB STOP_FLAG, EMERGENCY_STOP
+					JB RESET_FLAG, RESET
+					
+					;DEGREE0 (forward)
+					MOV R5, #0FEH 			; Set pulse width control (0.5ms)   
+					MOV R6, #33H    
+					MOV R3, #0B9H 			; Set pulse width control (19.5ms)   
+					MOV R4, #0CCH  
+					INC CYCLE_COUNT  
+					LCALL SERVO_DELAY
+					JB STOP_FLAG, EMERGENCY_STOP
+					JB RESET_FLAG, RESET
+					
+					
+					MOV A, CYCLE_COUNT
+					CJNE A, #10, NEW_CYCLE 	; continue for new cycle if the cycle count haven't reach 11th	
+					CLR MOTOR_RUNNING
+					RET
+					
+					
+;------------------ Interrupt Module ------------------
+					; ISR of Timer0 
+TIMER0_INT_PWM:		JB PWM_FLAG, LOW_CYCLE	; jump to low cycle is current is high cycle
+
+HIGH_CYCLE: 		SETB PWM_FLAG			; Make PWM_FLAG = 1 to indicate start of high section
+					SETB PWM_PIN  			; Make PWM output pin High   
+					MOV TH0, R5  			; Load high byte of timer with R5   
+					MOV TL0, R6  			; Load low byte of timer with R6  	
+					CLR TF0
+					RETI
+
+LOW_CYCLE: 			CLR PWM_FLAG 			; Make PWM_FLAG = 0 to indicate start of low section   
+					CLR PWM_PIN 			; Make PWM output pin low   
+					MOV TH0, R3  			; Load high byte of timer with R3
+					MOV TL0, R4  			; Load low byte of timer with R4
+					CLR TF0
+					RETI
+
+					;ISR of External Interrupt 0
+ISR_INT0:			SETB STOP_FLAG
+					RETI
+
+					; ISR of External Interrupt 1
+ISR_INT1:			SETB RESET_FLAG
+					RETI
+
+
+;--------------- 7-Segment Display Module ---------------
+DIS_7SEG: 			MOV A, CYCLE_COUNT
+					MOV DPTR, #DIS_CODE
+					MOV B, #10
+					DIV AB 					; Let A=ten digit, B=unit digit
+
+					MOVC A, @A+DPTR			; load the 7-segment display code into a by searching the lookup table
+					SETB DIS1				; activates the display 1
+					MOV SEG_PORT, A			; moves the pattern to Port 2
+					LCALL SEG_DELAY			; calls 1ms delay for 7 segment display
+					CLR DIS1				; deactivates the display 1
+
+					MOV A,B					
+					MOVC A, @A+DPTR			; load the 7-segment display code into a by searching the lookup table
+					SETB DIS0				; activates the display 0
+					MOV SEG_PORT, A			; moves the pattern to Port 2
+					LCALL SEG_DELAY			; calls 1ms delay for 7 segment display
+					CLR DIS0				; deactivates the display 0
+					RET
+
+
+;----------- Emergency Stop and Reset Module -----------
+EMERGENCY_STOP:		CLR TR0
+					CLR STOP_FLAG
+					CLR PWM_PIN
+					CLR TF0
+					LJMP START_AGAIN
+
+RESET: 				CLR RESET_FLAG
+					LCALL LCD_RESET
+					RET
+					
+					
+;-------------------- Delay Module --------------------
+					; delay 10ms
+LCD_DELAY: 			MOV TH1,#0DBH
+					MOV TL1,#0F0H
+					SETB TR1
+					JNB TF1,$
+					CLR TF1
+					CLR TR1
+					RET
+
+					; LCD longer delay for display
+DELAY_1s:			MOV R2,#20
+LOOP_AGAIN:			MOV TH1,#3CH
+					MOV TL1,#0B0H
+					SETB TR1
+					JNB TF1,$
+					CLR TF1
+					CLR TR1
+					DJNZ R2,LOOP_AGAIN
+					RET
+
+					; Servo motor delay
+SERVO_DELAY:		MOV R1, SPEED_MODE
+AGAIN:  			LCALL DIS_7SEG
+					MOV TH1, #4BH
+					MOV TL1, #0FDH			; 50ms delay
+					SETB TR1
+LOOP:				LCALL DIS_7SEG
+					JNB TF1, LOOP 			; loop until TF1 flag is high
+					CLR TR1
+					CLR TF1
+					DJNZ R1, AGAIN
+					RET
+
+					; 7-segment display delay
+SEG_DELAY: 			MOV 	R3,#02H	
+DEL1: 				MOV 	R2,#0FAH
+DEL2: 				DJNZ 	R2,DEL2
+					DJNZ 	R3,DEL1
+					RET
+	
+	
+;------------ 7-Segment Display Lookup Table ------------
+DIS_CODE:	DB 3FH  ; 0
+			DB 06H  ; 1
+			DB 5BH  ; 2
+			DB 4FH  ; 3
+			DB 66H  ; 4
+			DB 6DH  ; 5
+			DB 7DH  ; 6
+			DB 07H  ; 7
+			DB 7FH  ; 8
+			DB 6FH  ; 9
+
+
+;--------------- LCD-Display Lookup Table ---------------
+MSG1: 	DB 'Select Speed', 0H	
+MSG2: 	DB '0, 1, 2 OR 3',0H
+MSG3: 	DB 'Confirm or Reset',0H
+MSG4: 	DB 'Start or reset?',0H
+MSG5: 	DB 'Mode 0 Selected',0H
+MSG6: 	DB 'Mode 1 Selected',0H	
+MSG7: 	DB 'Mode 2 Selected',0H	
+MSG8: 	DB 'Mode 3 Selected',0H
+MSG9:	DB 'Servo Motor',0H
+MSG10: 	DB 'Mode 0 Running..',0H
+MSG11: 	DB 'Mode 1 Running..',0H
+MSG12: 	DB 'Mode 2 Running..',0H
+MSG13: 	DB 'Mode 3 Running..',0H
+MSG14: 	DB 'Running Complete',0H
+	
+MSG15: 	DB 'Group 8 Members:',0H
+MSG16: 	DB 'Ng Jing Xuan',0H
+MSG17: 	DB 'Ng Yu Heng',0H
+MSG18: 	DB 'Chow Bin Lin',0H
+END
